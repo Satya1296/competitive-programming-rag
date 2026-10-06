@@ -1,0 +1,24 @@
+# Core Dependencies
+pydantic[email]>=2.0.0
+email-validator>=2.0.0
+pytest>=7.0.0
+python-dotenv>=1.0.0
+httpx>=0.24.0
+
+# FastAPI & Web Server
+fastapi>=0.100.0
+uvicorn>=0.20.0
+python-multipart>=0.0.6
+
+# Database & ORM
+sqlalchemy>=2.0.0
+
+# Security & Authentication
+passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.0
+pyjwt>=2.8.0
+
+# Preprocessing, Embeddings & Vector Storage
+sentence-transformers>=2.2.0
+chromadb>=0.4.0
+
