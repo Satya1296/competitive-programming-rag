@@ -1,13 +1,32 @@
-import React, { useState } from 'react';
-import { X, ExternalLink, Clock, HardDrive, Tag, Code, Upload, Edit3, CheckCircle, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import {
+  X,
+  ExternalLink,
+  Clock,
+  HardDrive,
+  Tag,
+  Code,
+  Upload,
+  Edit3,
+  CheckCircle,
+  AlertCircle,
+  RefreshCw,
+} from 'lucide-react';
 import { submissionApi, vectorApi } from '../services/api';
 
 const CodeViewerModal = ({ submission: initialSubmission, onClose, onUpdateSubmission }) => {
   if (!initialSubmission) return null;
 
   const [submission, setSubmission] = useState(initialSubmission);
+  const [lookingUp, setLookingUp] = useState(false);
+  const [lookupDone, setLookupDone] = useState(false);
   const [showImportForm, setShowImportForm] = useState(false);
   const [importMode, setImportMode] = useState('paste'); // 'paste' or 'upload'
+
+  // Multi-solution state
+  const [availableSolutions, setAvailableSolutions] = useState(initialSubmission?.available_solutions || []);
+  const [activeFilePath, setActiveFilePath] = useState(initialSubmission?.filename || null);
+  const [switchingSolution, setSwitchingSolution] = useState(false);
 
   // Form State
   const [pastedCode, setPastedCode] = useState('');
@@ -20,12 +39,112 @@ const CodeViewerModal = ({ submission: initialSubmission, onClose, onUpdateSubmi
   const [successMsg, setSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
-  const hasCode =
-    submission.has_source_code !== undefined
-      ? submission.has_source_code
-      : submission.code_source !== 'api_metadata' &&
-        submission.code &&
-        !submission.code.startsWith('// Source code not provided');
+  // Check if submission currently has genuine source code
+  const isGenuineCode = (sub) => {
+    if (!sub || !sub.code || !sub.code.trim()) return false;
+    if (sub.code.startsWith('// Source code not provided')) return false;
+    if (sub.code_source === 'api_metadata') return false;
+    if (sub.has_source_code === false) return false;
+    return true;
+  };
+
+  const hasCode = isGenuineCode(submission);
+
+  // Dynamic GitHub lookup and available solutions discovery
+  useEffect(() => {
+    setSubmission(initialSubmission);
+    setShowImportForm(false);
+    setErrorMsg('');
+    setSuccessMsg('');
+    setLookupDone(false);
+    setAvailableSolutions(initialSubmission?.available_solutions || []);
+    setActiveFilePath(initialSubmission?.filename || null);
+
+    let isCancelled = false;
+
+    if (initialSubmission) {
+      const alreadyHasCode = isGenuineCode(initialSubmission);
+      if (!alreadyHasCode) {
+        setLookingUp(true);
+      }
+
+      submissionApi
+        .getSourceCode(initialSubmission.id)
+        .then((res) => {
+          if (!isCancelled && res) {
+            if (res.available_solutions && res.available_solutions.length > 0) {
+              setAvailableSolutions(res.available_solutions);
+            }
+            if (res.source_code && (!alreadyHasCode || res.source_code !== initialSubmission.code)) {
+              const updated = {
+                ...initialSubmission,
+                code: res.source_code,
+                language: res.language || initialSubmission.language,
+                code_source: 'github_lookup',
+                notes: res.github_url ? `GitHub: ${res.github_url}` : initialSubmission.notes,
+                has_source_code: true,
+                github_url: res.github_url,
+                filename: res.filename,
+                available_solutions: res.available_solutions || [],
+              };
+              setSubmission(updated);
+              setActiveFilePath(res.filename || res.available_solutions?.[0]?.path);
+              if (onUpdateSubmission) onUpdateSubmission(updated);
+            } else if (res.github_url && !initialSubmission.github_url) {
+              setSubmission((prev) => ({
+                ...prev,
+                github_url: res.github_url,
+                available_solutions: res.available_solutions || [],
+              }));
+            }
+          }
+        })
+        .catch((err) => {
+          console.log('GitHub lookup detail:', err.response?.data?.detail || err.message);
+        })
+        .finally(() => {
+          if (!isCancelled) {
+            setLookingUp(false);
+            setLookupDone(true);
+          }
+        });
+
+      return () => {
+        isCancelled = true;
+      };
+    }
+  }, [initialSubmission?.id]);
+
+  // Handle switching to a specific solution file
+  const handleSelectSolution = async (solution) => {
+    if (!solution || !solution.path || solution.path === activeFilePath) return;
+    setSwitchingSolution(true);
+    setErrorMsg('');
+    try {
+      const res = await submissionApi.getSourceCode(submission.id, solution.path);
+      if (res && res.source_code) {
+        setActiveFilePath(solution.path);
+        setSubmission((prev) => ({
+          ...prev,
+          code: res.source_code,
+          language: res.language,
+          filename: res.filename,
+          github_url: res.github_url,
+        }));
+      }
+    } catch (err) {
+      setErrorMsg(err.response?.data?.detail || 'Failed to load selected solution file.');
+    } finally {
+      setSwitchingSolution(false);
+    }
+  };
+
+  // Extract GitHub URL from notes or direct property
+  const githubUrl =
+    submission.github_url ||
+    (submission.notes && submission.notes.startsWith('GitHub: ')
+      ? submission.notes.replace(/^GitHub:\s*/, '').trim()
+      : null);
 
   // Save pasted code
   const handleSavePastedCode = async (e) => {
@@ -132,12 +251,36 @@ const CodeViewerModal = ({ submission: initialSubmission, onClose, onUpdateSubmi
                   borderRadius: '4px',
                   fontSize: '0.75rem',
                   fontWeight: '600',
-                  background: hasCode ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)',
-                  color: hasCode ? '#34d399' : '#fbbf24',
-                  border: hasCode ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(245, 158, 11, 0.3)',
+                  background: hasCode
+                    ? submission.code_source === 'github_lookup'
+                      ? 'rgba(129, 140, 248, 0.15)'
+                      : 'rgba(16, 185, 129, 0.15)'
+                    : lookingUp
+                    ? 'rgba(99, 102, 241, 0.15)'
+                    : 'rgba(245, 158, 11, 0.15)',
+                  color: hasCode
+                    ? submission.code_source === 'github_lookup'
+                      ? '#a5b4fc'
+                      : '#34d399'
+                    : lookingUp
+                    ? '#818cf8'
+                    : '#fbbf24',
+                  border: hasCode
+                    ? submission.code_source === 'github_lookup'
+                      ? '1px solid rgba(129, 140, 248, 0.3)'
+                      : '1px solid rgba(16, 185, 129, 0.3)'
+                    : lookingUp
+                    ? '1px solid rgba(99, 102, 241, 0.3)'
+                    : '1px solid rgba(245, 158, 11, 0.3)',
                 }}
               >
-                {hasCode ? 'Source Code Attached' : 'Metadata Only'}
+                {hasCode
+                  ? submission.code_source === 'github_lookup'
+                    ? 'GitHub Linked'
+                    : 'Source Code Attached'
+                  : lookingUp
+                  ? 'Searching GitHub...'
+                  : 'Source Code Unavailable'}
               </span>
             </div>
             <div style={styles.metaRow}>
@@ -169,21 +312,45 @@ const CodeViewerModal = ({ submission: initialSubmission, onClose, onUpdateSubmi
             </div>
           )}
 
-          {!hasCode && (
+          {/* Looking Up Banner */}
+          {lookingUp && (
+            <div style={styles.lookingUpCard}>
+              <RefreshCw size={18} className="spin" color="#818cf8" style={{ flexShrink: 0 }} />
+              <div>
+                <div style={{ fontWeight: '600', color: '#c7d2fe', fontSize: '0.85rem' }}>
+                  Looking up solution in connected GitHub repository...
+                </div>
+                <div style={{ color: '#9ca3af', fontSize: '0.78rem', marginTop: '0.15rem' }}>
+                  Searching repository tree and matching by problem title, slug, and filename.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Source Code Unavailable Alert */}
+          {!hasCode && !lookingUp && (
             <div style={styles.metadataWarningBox}>
               <AlertCircle size={20} color="#f59e0b" style={{ flexShrink: 0 }} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: '700', color: '#fbbf24', fontSize: '0.88rem' }}>
-                  Metadata Only (No source code attached)
+                  Source Code Unavailable
                 </div>
                 <div style={{ color: '#d1d5db', fontSize: '0.8rem', marginTop: '0.2rem' }}>
-                  Codeforces API does not supply source code for user submissions. Attach your source code below so the AI Knowledge Base can search and analyze your implementation.
+                  {submission.platform === 'leetcode'
+                    ? 'No matching solution file was found in your connected GitHub repository. Attach your source code below so the AI Knowledge Base can analyze your implementation.'
+                    : 'Source code was not provided for this submission. Attach your source code below so the AI Knowledge Base can search and analyze it.'}
                 </div>
               </div>
               <button
                 onClick={() => setShowImportForm(true)}
                 className="btn-primary"
-                style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem', background: '#f59e0b', color: '#0f172a', border: 'none' }}
+                style={{
+                  padding: '0.35rem 0.75rem',
+                  fontSize: '0.8rem',
+                  background: '#f59e0b',
+                  color: '#0f172a',
+                  border: 'none',
+                }}
               >
                 <Edit3 size={14} />
                 <span>Attach Source Code</span>
@@ -248,13 +415,33 @@ const CodeViewerModal = ({ submission: initialSubmission, onClose, onUpdateSubmi
           <div style={styles.codeHeader}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               <Code size={16} color="#6366f1" />
-              <span style={{ fontWeight: '600', fontSize: '0.9rem' }}>Source Code Snippet</span>
+              <span style={{ fontWeight: '600', fontSize: '0.9rem' }}>Source Code</span>
+              {hasCode && (
+                <span style={{ fontSize: '0.75rem', color: '#818cf8', background: 'rgba(99,102,241,0.1)', padding: '0.15rem 0.5rem', borderRadius: '4px' }}>
+                  {submission.language}
+                </span>
+              )}
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-              <span style={styles.sourceTag}>Source: {submission.code_source}</span>
-              
-              {submission.code && submission.code.trim() && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flexWrap: 'wrap' }}>
+              <span style={styles.sourceTag}>
+                Source: {hasCode ? submission.code_source : 'unavailable'}
+              </span>
+
+              {githubUrl && (
+                <a
+                  href={githubUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={styles.githubLink}
+                  title="View original solution file on GitHub"
+                >
+                  <ExternalLink size={13} />
+                  <span>View on GitHub</span>
+                </a>
+              )}
+
+              {hasCode && (
                 <button
                   onClick={async () => {
                     setSaving(true);
@@ -285,7 +472,7 @@ const CodeViewerModal = ({ submission: initialSubmission, onClose, onUpdateSubmi
                 style={{ padding: '0.3rem 0.6rem', fontSize: '0.8rem' }}
               >
                 <Edit3 size={14} />
-                <span>{showImportForm ? 'Cancel' : 'Attach / Update Code'}</span>
+                <span>{showImportForm ? 'Cancel' : hasCode ? 'Update Code' : 'Attach Code'}</span>
               </button>
             </div>
           </div>
@@ -382,10 +569,74 @@ const CodeViewerModal = ({ submission: initialSubmission, onClose, onUpdateSubmi
             </div>
           )}
 
-          {/* Code Viewer Block */}
-          <pre style={styles.codeBlock}>
-            <code>{submission.code}</code>
-          </pre>
+          {/* Multi-Solution Switcher */}
+          {availableSolutions && availableSolutions.length > 1 && (
+            <div style={styles.solutionSwitcherBar}>
+              <span style={{ fontSize: '0.78rem', color: '#94a3b8', fontWeight: '600' }}>
+                Available Solutions ({availableSolutions.length}):
+              </span>
+              <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                {availableSolutions.map((sol, idx) => {
+                  const isActive =
+                    activeFilePath === sol.path ||
+                    activeFilePath === sol.filename ||
+                    (!activeFilePath && idx === 0);
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => handleSelectSolution(sol)}
+                      disabled={switchingSolution}
+                      style={{
+                        padding: '0.25rem 0.65rem',
+                        borderRadius: '6px',
+                        fontSize: '0.75rem',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        border: isActive ? '1px solid #6366f1' : '1px solid rgba(255, 255, 255, 0.1)',
+                        background: isActive ? 'rgba(99, 102, 241, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                        color: isActive ? '#a5b4fc' : '#9ca3af',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.35rem',
+                        transition: 'all 0.15s ease',
+                      }}
+                    >
+                      <span>{sol.filename}</span>
+                      <span style={{ opacity: 0.75, fontSize: '0.7rem' }}>({sol.language})</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Code Viewer Block or State Box */}
+          {hasCode ? (
+            <pre style={styles.codeBlock}>
+              <code>{submission.code}</code>
+            </pre>
+          ) : lookingUp ? (
+            <div style={styles.emptyCodeBox}>
+              <RefreshCw size={28} className="spin" color="#818cf8" />
+              <div style={{ color: '#c7d2fe', fontSize: '0.88rem', fontWeight: '600', marginTop: '0.75rem' }}>
+                Searching GitHub for matching solution...
+              </div>
+              <p style={{ color: '#9ca3af', fontSize: '0.78rem', marginTop: '0.25rem' }}>
+                Querying repository structure and solution files
+              </p>
+            </div>
+          ) : (
+            <div style={styles.emptyCodeBox}>
+              <AlertCircle size={32} color="#64748b" />
+              <div style={{ color: '#94a3b8', fontSize: '0.9rem', fontWeight: '600', marginTop: '0.6rem' }}>
+                Source Code Unavailable
+              </div>
+              <p style={{ color: '#64748b', fontSize: '0.8rem', marginTop: '0.25rem', textAlign: 'center', maxWidth: '420px', lineHeight: 1.5 }}>
+                No genuine source code was found in your connected GitHub repository for this problem. You can manually attach or paste your solution using the button above.
+              </p>
+            </div>
+          )}
 
           {submission.notes && (
             <div style={styles.notesBox}>
@@ -415,7 +666,7 @@ const styles = {
   },
   modal: {
     width: '100%',
-    maxWidth: '820px',
+    maxWidth: '840px',
     maxHeight: '90vh',
     backgroundColor: '#0f172a',
     border: '1px solid rgba(255, 255, 255, 0.1)',
@@ -487,6 +738,25 @@ const styles = {
     alignItems: 'center',
     gap: '0.5rem',
   },
+  lookingUpCard: {
+    background: 'rgba(99, 102, 241, 0.12)',
+    border: '1px solid rgba(99, 102, 241, 0.25)',
+    borderRadius: '10px',
+    padding: '0.85rem 1rem',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.85rem',
+  },
+  metadataWarningBox: {
+    background: 'rgba(245, 158, 11, 0.12)',
+    border: '1px solid rgba(245, 158, 11, 0.3)',
+    borderRadius: '10px',
+    padding: '0.85rem 1rem',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.85rem',
+    flexWrap: 'wrap',
+  },
   statsGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
@@ -535,6 +805,8 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'space-between',
     color: '#f3f4f6',
+    flexWrap: 'wrap',
+    gap: '0.5rem',
   },
   sourceTag: {
     fontSize: '0.75rem',
@@ -542,6 +814,20 @@ const styles = {
     background: '#1e293b',
     padding: '0.25rem 0.6rem',
     borderRadius: '4px',
+  },
+  githubLink: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.35rem',
+    fontSize: '0.8rem',
+    color: '#a5b4fc',
+    background: 'rgba(99, 102, 241, 0.15)',
+    border: '1px solid rgba(99, 102, 241, 0.3)',
+    padding: '0.25rem 0.6rem',
+    borderRadius: '4px',
+    textDecoration: 'none',
+    fontWeight: '600',
+    transition: 'all 0.15s ease',
   },
   importCard: {
     background: '#1e293b',
@@ -601,7 +887,28 @@ const styles = {
     fontFamily: 'var(--font-code)',
     fontSize: '0.85rem',
     overflowX: 'auto',
-    maxHeight: '300px',
+    maxHeight: '340px',
+  },
+  emptyCodeBox: {
+    background: '#020617',
+    border: '1px dashed rgba(255, 255, 255, 0.1)',
+    borderRadius: '8px',
+    padding: '2.5rem 1.5rem',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: '180px',
+  },
+  solutionSwitcherBar: {
+    background: '#1e293b',
+    border: '1px solid rgba(99, 102, 241, 0.2)',
+    borderRadius: '8px',
+    padding: '0.5rem 0.75rem',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.75rem',
+    flexWrap: 'wrap',
   },
   notesBox: {
     background: 'rgba(245, 158, 11, 0.1)',
@@ -610,16 +917,6 @@ const styles = {
     padding: '0.75rem 1rem',
     borderRadius: '8px',
     fontSize: '0.85rem',
-  },
-  metadataWarningBox: {
-    background: 'rgba(245, 158, 11, 0.12)',
-    border: '1px solid rgba(245, 158, 11, 0.3)',
-    borderRadius: '10px',
-    padding: '0.85rem 1rem',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '0.85rem',
-    flexWrap: 'wrap',
   },
 };
 

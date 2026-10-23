@@ -11,6 +11,14 @@ class ConnectProfileRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
 
+class ConnectGitHubRequest(BaseModel):
+    repo_url: str = Field(..., min_length=1, description="GitHub repository URL or owner/repo format")
+    access_token: Optional[str] = Field(default=None, description="Optional GitHub Personal Access Token")
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+
+
 class ProfileStatusResponse(BaseModel):
     platform: str
     handle: str

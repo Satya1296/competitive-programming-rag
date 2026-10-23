@@ -19,7 +19,7 @@ class SearchResultItem(BaseModel):
     total_chunks: int
     has_source_code: bool = True
     document_text: str
-    distance: float
+    distance: Optional[float] = 0.0
     similarity_score: float
     metadata: Optional[Dict[str, Any]] = None
 

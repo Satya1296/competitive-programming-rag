@@ -175,6 +175,7 @@ class ChromaVectorStore:
         # Fetch candidate chunks from ChromaDB (fetch candidate pool to ensure top_k unique submissions)
         fetch_n = min(max(top_k * 10, 50), total_in_coll)
 
+        results = None
         try:
             results = self._collection.query(
                 query_embeddings=[query_embedding],
@@ -184,7 +185,37 @@ class ChromaVectorStore:
             )
         except Exception as e:
             logger.error(f"ChromaDB query failed for user_id={user_id}: {e}")
-            return []
+
+        # If HNSW query filtered out all candidate chunks due to multi-user graph traversal,
+        # fallback to direct user-scoped retrieval to ensure complete recall without leakage
+        if not results or not results.get("ids") or len(results["ids"][0]) == 0:
+            try:
+                user_records = self._collection.get(
+                    where=where_filter,
+                    include=["documents", "metadatas", "embeddings"]
+                )
+                if user_records and user_records.get("ids") and len(user_records["ids"]) > 0:
+                    import numpy as np
+                    doc_embs = np.array(user_records["embeddings"], dtype=np.float32)
+                    q_emb = np.array(query_embedding, dtype=np.float32)
+                    denom = np.linalg.norm(doc_embs, axis=1) * np.linalg.norm(q_emb)
+                    denom[denom == 0] = 1e-9
+                    cos_sims = np.dot(doc_embs, q_emb) / denom
+
+                    paired = sorted(
+                        zip(user_records["ids"], user_records["documents"], user_records["metadatas"], cos_sims),
+                        key=lambda x: x[3],
+                        reverse=True
+                    )
+                    top_paired = paired[:top_k * 5]
+                    results = {
+                        "ids": [[p[0] for p in top_paired]],
+                        "documents": [[p[1] for p in top_paired]],
+                        "metadatas": [[p[2] for p in top_paired]],
+                        "distances": [[round(float(max(0.0, 1.0 - p[3])), 4) for p in top_paired]]
+                    }
+            except Exception as e:
+                logger.warning(f"Fallback direct user retrieval failed: {e}")
 
         raw_candidates: List[Dict[str, Any]] = []
         if results and results.get("ids") and len(results["ids"]) > 0:

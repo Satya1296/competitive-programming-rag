@@ -14,7 +14,12 @@ api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('cp_rag_token');
     if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
+      config.headers = config.headers || {};
+      if (typeof config.headers.set === 'function') {
+        config.headers.set('Authorization', `Bearer ${token}`);
+      } else {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
     }
     return config;
   },
@@ -68,6 +73,20 @@ export const platformApi = {
     const res = await api.post('/api/platforms/codechef/sync');
     return res.data;
   },
+  connectGitHub: async (repoUrl, accessToken = null) => {
+    const payload = { repo_url: repoUrl };
+    if (accessToken) payload.access_token = accessToken;
+    const res = await api.post('/api/platforms/github/connect', payload);
+    return res.data;
+  },
+  getGitHubStatus: async () => {
+    const res = await api.get('/api/platforms/github/status');
+    return res.data;
+  },
+  disconnectGitHub: async () => {
+    const res = await api.delete('/api/platforms/github/disconnect');
+    return res.data;
+  },
   getAllStatuses: async () => {
     const res = await api.get('/api/platforms/status');
     return res.data;
@@ -77,6 +96,7 @@ export const platformApi = {
     return res.data;
   },
 };
+
 
 export const publicProfilesApi = {
   search: async (platform, username) => {
@@ -106,8 +126,9 @@ export const submissionApi = {
     });
     return res.data;
   },
-  getSourceCode: async (submissionId) => {
-    const res = await api.get(`/api/submissions/${submissionId}/source-code`);
+  getSourceCode: async (submissionId, filePath = null) => {
+    const params = filePath ? { file_path: filePath } : {};
+    const res = await api.get(`/api/submissions/${submissionId}/source-code`, { params });
     return res.data;
   },
 };

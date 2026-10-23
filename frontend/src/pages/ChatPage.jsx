@@ -1,15 +1,13 @@
 import React, { useState } from 'react';
-import { MessageSquareCode, Send, Sparkles, Bot, User as UserIcon, AlertCircle, Info, RefreshCw, Database, ExternalLink, CheckCircle } from 'lucide-react';
+import { MessageSquareCode, Send, Sparkles, Bot, User as UserIcon, RefreshCw } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { ragApi } from '../services/api';
 
 const SAMPLE_QUESTIONS = [
-  'How did I approach problems involving prefix sums?',
-  'What patterns do I use for binary search?',
-  'Which problems did I solve using BFS?',
-  'What mistakes do I repeatedly make?',
-  'What topics appear frequently in my submissions?',
-  'Show examples of my greedy solutions.',
+  'How did I approach binary search?',
+  'What mistakes do I make in graph problems?',
+  'How can I improve my greedy solutions?',
+  'What is my approach to prefix sums?',
 ];
 
 const ChatPage = () => {
@@ -18,7 +16,7 @@ const ChatPage = () => {
     {
       id: 1,
       sender: 'assistant',
-      text: `Hello ${user?.username || 'there'}! I am your AI Competitive Programming Assistant. Ask me any question about your personal submission history, algorithm implementations, or problem-solving patterns.`,
+      text: `Hello ${user?.username || 'there'}! I am your Personal Coding Mentor. Ask me about any coding concept to review your actual approach, identify mistakes, and get next steps.`,
       sources: [],
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     },
@@ -62,7 +60,7 @@ const ChatPage = () => {
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (err) {
       const detail = err.response?.data?.detail;
-      let msg = 'Failed to generate RAG answer from backend.';
+      let msg = 'Failed to generate answer from backend.';
       if (typeof detail === 'string') {
         msg = detail;
       } else if (detail && typeof detail === 'object') {
@@ -95,16 +93,16 @@ const ChatPage = () => {
             <MessageSquareCode size={24} color="#818cf8" />
           </div>
           <div>
-            <h1 style={styles.title}>Knowledge Chat (RAG)</h1>
+            <h1 style={styles.title}>Personal Coding Mentor</h1>
             <p style={styles.subtitle}>
-              Personalized AI answers grounded strictly in your retrieved personal competitive-programming history.
+              Concise mentorship grounded strictly in your personal competitive programming history.
             </p>
           </div>
         </div>
 
         <div style={styles.statusBadge}>
           <Sparkles size={14} color="#34d399" />
-          <span>Grounded Personal RAG Active</span>
+          <span>Personal Mentor Active</span>
         </div>
       </div>
 
@@ -135,47 +133,6 @@ const ChatPage = () => {
               >
                 <div style={styles.messageText}>{msg.text}</div>
 
-                {/* Sources Section for Assistant Messages */}
-                {msg.sender === 'assistant' && msg.sources && msg.sources.length > 0 && (
-                  <div style={styles.sourcesBox}>
-                    <div style={styles.sourcesHeader}>
-                      <Database size={13} color="#818cf8" />
-                      <span>Retrieved Sources Used ({msg.sources.length}):</span>
-                    </div>
-
-                    <div style={styles.sourcesGrid}>
-                      {msg.sources.map((src, sIdx) => (
-                        <div key={sIdx} style={styles.sourceChip}>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
-                            <span style={styles.sourceTitle}>{src.problem_title}</span>
-                            <span style={{ fontSize: '0.7rem', color: '#34d399', fontWeight: '700' }}>
-                              {Math.round(src.similarity_score * 100)}% Match
-                            </span>
-                          </div>
-                          <div style={styles.sourceMeta}>
-                            <span>{src.platform}</span>
-                            <span>•</span>
-                            <span>ID: {src.problem_id || src.submission_id}</span>
-                            <span>•</span>
-                            <span>{src.language}</span>
-                            <span>•</span>
-                            <span style={{ color: src.has_source_code ? '#60a5fa' : '#fbbf24' }}>
-                              {src.has_source_code ? 'Code Attached' : 'Metadata Only'}
-                            </span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {msg.sender === 'assistant' && msg.hasRelevantContext === false && (
-                  <div style={styles.noContextBadge}>
-                    <Info size={13} />
-                    <span>0 Personal Sources Retrieved (Relevance threshold filter applied)</span>
-                  </div>
-                )}
-
                 <div style={styles.timestamp}>{msg.timestamp}</div>
               </div>
 
@@ -194,7 +151,7 @@ const ChatPage = () => {
               </div>
               <div style={{ ...styles.messageBubble, ...styles.assistantBubble, display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
                 <RefreshCw size={16} className="spin" color="#818cf8" />
-                <span style={{ fontSize: '0.85rem', color: '#cbd5e1' }}>Retrieving personal context & generating answer...</span>
+                <span style={{ fontSize: '0.85rem', color: '#cbd5e1' }}>Reviewing your personal history & formulating mentor advice...</span>
               </div>
             </div>
           )}
@@ -222,7 +179,7 @@ const ChatPage = () => {
         <form onSubmit={(e) => handleSend(e)} style={styles.inputForm}>
           <input
             type="text"
-            placeholder="Ask a question about your personal solution history (e.g. 'How did I solve prefix sum problems?')..."
+            placeholder="Ask your mentor (e.g. 'How did I approach binary search?' or 'What is my approach to prefix sums?')..."
             value={inputQuery}
             onChange={(e) => setInputQuery(e.target.value)}
             disabled={loading}

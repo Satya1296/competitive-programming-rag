@@ -2,10 +2,10 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
-
 # Base Directory Paths
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
+load_dotenv()
 DATA_DIR = BASE_DIR / "data"
 RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
@@ -41,9 +41,9 @@ SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.22"))
 
 # Phase 5: LLM & RAG Configuration
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower()  # "gemini", "openai", "groq", "mock"
-LLM_MODEL = os.getenv("LLM_MODEL", "gemini-3.8-flash")
-LLM_API_KEY = os.getenv("LLM_API_KEY", os.getenv("GEMINI_API_KEY", ""))
-MAX_RAG_CONTEXT_CHARS = int(os.getenv("MAX_RAG_CONTEXT_CHARS", "12000"))
+LLM_MODEL = os.getenv("LLM_MODEL") or "gemini-3.5-flash-lite"
+LLM_API_KEY = os.getenv("LLM_API_KEY") or os.getenv("GEMINI_API_KEY") or ""
+MAX_RAG_CONTEXT_CHARS = int(os.getenv("MAX_RAG_CONTEXT_CHARS", "6000"))
 
 
 

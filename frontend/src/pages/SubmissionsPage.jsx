@@ -26,6 +26,13 @@ const SubmissionsPage = () => {
     fetchSubmissions();
   }, []);
 
+  const handleUpdateSubmission = (updatedSub) => {
+    setSubmissions((prev) =>
+      prev.map((s) => (s.id === updatedSub.id ? { ...s, ...updatedSub } : s))
+    );
+    setSelectedSub(updatedSub);
+  };
+
   return (
     <div style={styles.container}>
       {/* Header */}
@@ -53,6 +60,7 @@ const SubmissionsPage = () => {
       <CodeViewerModal
         submission={selectedSub}
         onClose={() => setSelectedSub(null)}
+        onUpdateSubmission={handleUpdateSubmission}
       />
     </div>
   );
