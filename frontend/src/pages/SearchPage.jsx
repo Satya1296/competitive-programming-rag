@@ -62,15 +62,64 @@ const SearchPage = () => {
   };
 
   // Open Code Viewer for a result submission
-  const handleOpenCodeViewer = async (submissionId) => {
+  const handleOpenCodeViewer = async (item) => {
     try {
-      // Fetch user submissions to locate full submission object
-      const allSubs = await submissionApi.getSubmissions();
-      const matched = allSubs.find((s) => s.submission_id === submissionId || s.id === submissionId);
+      const submissionId = item.submission_id || item.id;
+      // Fetch user submissions to check for active SQLite platform submission
+      const allSubs = await submissionApi.getSubmissions().catch(() => []);
+      let matched = allSubs.find((s) => s.submission_id === submissionId || s.id === submissionId);
+      
+      // If not directly matched by submission ID, attempt matching by problem ID or Title
+      if (!matched && item.problem_id) {
+        matched = allSubs.find(
+          (s) => s.problem_id && s.problem_id.toString().toLowerCase() === item.problem_id.toString().toLowerCase()
+        );
+      }
+      if (!matched && item.problem_title) {
+        matched = allSubs.find(
+          (s) => s.problem_title && s.problem_title.toLowerCase() === item.problem_title.toLowerCase()
+        );
+      }
+
       if (matched) {
         setSelectedSub(matched);
       } else {
-        setError(`Could not locate submission '${submissionId}' in active database.`);
+        // Standalone GitHub solution or record without SQLite submission
+        let extractedCode = '';
+        if (item.document_text) {
+          const codeBlockMatch = item.document_text.match(/## Source Code\s*```[a-zA-Z0-9_\-]*\n([\s\S]*?)```/);
+          if (codeBlockMatch) {
+            extractedCode = codeBlockMatch[1].trim();
+          } else {
+            extractedCode = item.document_text.trim();
+          }
+        }
+
+        let ghUrl = null;
+        if (item.document_text) {
+          const notesMatch = item.document_text.match(/\*\*Notes\*\*:\s*Synced from GitHub repo ([^:\n]+):\s*([^\n]+)/);
+          if (notesMatch) {
+            const repo = notesMatch[1].trim();
+            const path = notesMatch[2].trim();
+            ghUrl = `https://github.com/${repo}/blob/main/${path}`;
+          }
+        }
+
+        const standaloneSub = {
+          id: submissionId,
+          submission_id: submissionId,
+          problem_id: item.problem_id || '',
+          problem_title: item.problem_title || 'GitHub Solution',
+          platform: item.platform || 'github',
+          language: item.language || 'cpp',
+          verdict: 'ACCEPTED',
+          code: extractedCode,
+          has_source_code: Boolean(item.has_source_code || extractedCode),
+          code_source: item.platform === 'github' ? 'github_sync' : 'user_upload',
+          notes: ghUrl ? `GitHub: ${ghUrl}` : (item.platform === 'github' ? `GitHub File: ${item.problem_id || item.problem_title}` : ''),
+          github_url: ghUrl,
+        };
+        setSelectedSub(standaloneSub);
       }
     } catch (err) {
       setError('Failed to load submission details.');
@@ -214,10 +263,42 @@ const SearchPage = () => {
                       </div>
                     </div>
 
-                    <div style={styles.scoreBadge}>
-                      <Sparkles size={12} color="#10b981" />
-                      <span>{Math.round(item.similarity_score * 100)}% Match</span>
-                    </div>
+                    {(() => {
+                      const pct = Math.round(item.similarity_score * 100);
+                      let bg = 'rgba(16, 185, 129, 0.15)';
+                      let border = '1px solid rgba(16, 185, 129, 0.3)';
+                      let color = '#34d399';
+                      let iconColor = '#10b981';
+                      let label = `${pct}% Match`;
+
+                      if (pct < 50) {
+                        bg = 'rgba(245, 158, 11, 0.15)';
+                        border = '1px solid rgba(245, 158, 11, 0.3)';
+                        color = '#fbbf24';
+                        iconColor = '#f59e0b';
+                        label = `${pct}% Relevant`;
+                      } else if (pct < 70) {
+                        bg = 'rgba(99, 102, 241, 0.15)';
+                        border = '1px solid rgba(99, 102, 241, 0.3)';
+                        color = '#818cf8';
+                        iconColor = '#818cf8';
+                        label = `${pct}% Match`;
+                      }
+
+                      return (
+                        <div
+                          style={{
+                            ...styles.scoreBadge,
+                            background: bg,
+                            border: border,
+                            color: color,
+                          }}
+                        >
+                          <Sparkles size={12} color={iconColor} />
+                          <span>{label}</span>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* Document / Chunk Snippet */}
@@ -227,7 +308,7 @@ const SearchPage = () => {
 
                   <div style={styles.cardFooter}>
                     <button
-                      onClick={() => handleOpenCodeViewer(item.submission_id)}
+                      onClick={() => handleOpenCodeViewer(item)}
                       className="btn-secondary"
                       style={{ padding: '0.35rem 0.75rem', fontSize: '0.8rem' }}
                     >

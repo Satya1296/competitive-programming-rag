@@ -73,6 +73,8 @@ const SubmissionsTable = ({ submissions = [], onSelectSubmission, loading, error
             <option value="leetcode">LeetCode</option>
             <option value="codechef">CodeChef</option>
           </select>
+
+
           <select
             value={verdictFilter}
             onChange={(e) => setVerdictFilter(e.target.value)}

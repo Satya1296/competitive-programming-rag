@@ -6,6 +6,10 @@ import {
   Flame,
   Code,
   Database,
+  GitBranch,
+  Trash2,
+  ExternalLink,
+  FileCode,
   Link as LinkIcon,
   RefreshCw,
   CheckCircle,
@@ -26,6 +30,10 @@ const MyProfilesPage = () => {
 
   const [lcHandle, setLcHandle] = useState('');
   const [ccHandle, setCcHandle] = useState('');
+
+  const [ghRepoUrl, setGhRepoUrl] = useState('');
+  const [ghAccessToken, setGhAccessToken] = useState('');
+  const [disconnecting, setDisconnecting] = useState(false);
 
   // Status & UI state
   const [platformStatuses, setPlatformStatuses] = useState([]);
@@ -50,6 +58,11 @@ const MyProfilesPage = () => {
 
       const cc = statuses.find((s) => s.platform === 'codechef');
       if (cc) setCcHandle(cc.handle || '');
+
+      const gh = statuses.find((s) => s.platform === 'github');
+      if (gh) {
+        setGhRepoUrl(gh.handle || '');
+      }
     } catch (err) {
       console.error('Failed to load platform statuses:', err);
       setPlatformStatuses([]);
@@ -85,6 +98,13 @@ const MyProfilesPage = () => {
         if (!ccHandle.trim()) return;
         const res = await platformApi.connectCodeChef(ccHandle.trim());
         setSyncMessage(`CodeChef profile '${res.handle}' connected successfully!`);
+      } else if (platform === 'github') {
+        if (!ghRepoUrl.trim()) return;
+        const res = await platformApi.connectGitHub(
+          ghRepoUrl.trim(),
+          ghAccessToken.trim() || null
+        );
+        setSyncMessage(`GitHub repository '${res.handle}' connected successfully!`);
       }
       await fetchStatuses();
     } catch (err) {
@@ -135,10 +155,30 @@ const MyProfilesPage = () => {
     }
   };
 
+  const handleDisconnectGitHub = async () => {
+    if (!window.confirm("Are you sure you want to disconnect your GitHub repository?")) return;
+    setDisconnecting(true);
+    setError('');
+    setSyncMessage('');
+    try {
+      await platformApi.disconnectGitHub();
+      setGhRepoUrl('');
+      setGhAccessToken('');
+      setSyncMessage("GitHub repository disconnected successfully.");
+      await fetchStatuses();
+    } catch (err) {
+      setError(err.response?.data?.detail || "Failed to disconnect GitHub repository.");
+    } finally {
+      setDisconnecting(false);
+    }
+  };
+
   const getStatus = (plat) => platformStatuses.find((s) => s.platform === plat);
   const cfStatus = getStatus('codeforces');
   const lcStatus = getStatus('leetcode');
   const ccStatus = getStatus('codechef');
+  const ghStatus = getStatus('github');
+
 
   return (
     <div style={styles.container}>
@@ -209,6 +249,24 @@ const MyProfilesPage = () => {
             <div style={styles.notConnected}>Not Connected</div>
           )}
         </div>
+
+        <div className="glass-panel" style={styles.statusCard}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <GitBranch size={20} color="#a78bfa" />
+            <span style={styles.cardTitle}>GitHub</span>
+          </div>
+          {ghStatus ? (
+            <div>
+              <div style={styles.cardValue} title={ghStatus.handle}>{ghStatus.handle}</div>
+              <div style={styles.cardMeta}>
+                {ghStatus.total_submissions_synced} synced •{' '}
+                {ghStatus.has_api_credentials ? 'Private/Token' : 'Public'}
+              </div>
+            </div>
+          ) : (
+            <div style={styles.notConnected}>Not Connected</div>
+          )}
+        </div>
       </div>
 
       {/* Main Connection & Management Panel */}
@@ -247,7 +305,19 @@ const MyProfilesPage = () => {
             <Database size={16} color="#34d399" /> CodeChef
             {ccStatus && <span style={styles.activeDot} />}
           </button>
+
+          <button
+            onClick={() => setActivePlatformTab('github')}
+            style={{
+              ...styles.tabBtn,
+              ...(activePlatformTab === 'github' ? styles.tabBtnActive : {}),
+            }}
+          >
+            <GitBranch size={16} color="#a78bfa" /> GitHub
+            {ghStatus && <span style={styles.activeDot} />}
+          </button>
         </div>
+
 
         {/* Codeforces Form & Status */}
         {activePlatformTab === 'codeforces' && (
@@ -412,6 +482,127 @@ const MyProfilesPage = () => {
           </div>
         )}
 
+        {/* GitHub Form & Status */}
+        {activePlatformTab === 'github' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+            <div style={styles.formHeader}>
+              <div>
+                <h3 style={{ fontSize: '1.1rem', fontWeight: '700', color: '#f3f4f6' }}>
+                  GitHub Repository Integration
+                </h3>
+                <p style={{ fontSize: '0.8rem', color: '#9ca3af', marginTop: '0.2rem' }}>
+                  {ghStatus
+                    ? `Connected to '${ghStatus.handle}'. Submissions without stored source code will dynamically look up matching solutions in this repository.`
+                    : 'Connect your personal GitHub repository (e.g. https://github.com/Satya1296/Leetcode-solutions) to automatically look up and display actual source code for your submissions.'}
+                </p>
+              </div>
+
+              {ghStatus && (
+                <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <button
+                    onClick={handleDisconnectGitHub}
+                    disabled={disconnecting}
+                    className="btn-secondary"
+                    style={{ color: '#f87171', borderColor: 'rgba(239, 68, 68, 0.3)' }}
+                    title="Disconnect repository"
+                  >
+                    <Trash2 size={16} />
+                    <span>{disconnecting ? 'Disconnecting...' : 'Disconnect Repository'}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Connection Form */}
+            <form onSubmit={(e) => handleConnect(e, 'github')} style={styles.form}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', flex: 1.5, minWidth: '240px' }}>
+                <label style={styles.label}>GitHub Repository URL</label>
+                <input
+                  type="text"
+                  placeholder="https://github.com/owner/repo or owner/repo"
+                  value={ghRepoUrl}
+                  onChange={(e) => setGhRepoUrl(e.target.value)}
+                  className="input-field"
+                />
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', flex: 1, minWidth: '200px' }}>
+                <label style={styles.label}>Personal Access Token (Optional)</label>
+                <input
+                  type="password"
+                  placeholder="ghp_xxx (for private repos)"
+                  value={ghAccessToken}
+                  onChange={(e) => setGhAccessToken(e.target.value)}
+                  className="input-field"
+                />
+              </div>
+
+              <button type="submit" className="btn-secondary" disabled={connecting} style={{ alignSelf: 'flex-end' }}>
+                <LinkIcon size={16} />
+                <span>{connecting ? 'Validating...' : ghStatus ? 'Update Repository' : 'Connect Repository'}</span>
+              </button>
+            </form>
+
+            {/* Status Information Card */}
+            {ghStatus && (
+              <div style={{
+                background: 'rgba(255, 255, 255, 0.03)',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                borderRadius: '10px',
+                padding: '1rem 1.25rem',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '0.75rem',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <CheckCircle size={18} color="#34d399" />
+                    <span style={{ fontWeight: '600', color: '#f3f4f6', fontSize: '0.9rem' }}>
+                      Repository Connected & Accessible
+                    </span>
+                  </div>
+                  <a
+                    href={`https://github.com/${ghStatus.handle}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ fontSize: '0.8rem', color: '#a5b4fc', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+                  >
+                    <span>View Repository on GitHub</span>
+                    <ExternalLink size={13} />
+                  </a>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.75rem', marginTop: '0.25rem' }}>
+                  <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.6rem 0.85rem', borderRadius: '6px' }}>
+                    <div style={{ fontSize: '0.75rem', color: '#9ca3af' }}>Target Repository</div>
+                    <div style={{ fontSize: '0.88rem', fontWeight: '600', color: '#e5e7eb', marginTop: '0.15rem' }}>
+                      {ghStatus.handle}
+                    </div>
+                  </div>
+
+                  <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.6rem 0.85rem', borderRadius: '6px' }}>
+                    <div style={{ fontSize: '0.75rem', color: '#9ca3af' }}>Dynamic Lookup Mode</div>
+                    <div style={{ fontSize: '0.88rem', fontWeight: '600', color: '#34d399', marginTop: '0.15rem' }}>
+                      Active (On-Demand)
+                    </div>
+                  </div>
+
+                  <div style={{ background: 'rgba(0,0,0,0.2)', padding: '0.6rem 0.85rem', borderRadius: '6px' }}>
+                    <div style={{ fontSize: '0.75rem', color: '#9ca3af' }}>Solutions Linked & Cached</div>
+                    <div style={{ fontSize: '0.88rem', fontWeight: '600', color: '#a5b4fc', marginTop: '0.15rem' }}>
+                      {ghStatus.total_submissions_synced} submissions
+                    </div>
+                  </div>
+                </div>
+
+                <p style={{ fontSize: '0.78rem', color: '#9ca3af', margin: 0, lineHeight: 1.5 }}>
+                  When you click <strong>View Code</strong> on an existing LeetCode submission in the Submissions Explorer, the system will search this repository for the matching solution, display the code and original GitHub file link, and cache it for fast subsequent views.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
         {syncMessage && (
           <div style={styles.successAlert}>
             <CheckCircle size={16} />
@@ -429,6 +620,7 @@ const MyProfilesPage = () => {
     </div>
   );
 };
+
 
 const styles = {
   container: {
@@ -578,6 +770,50 @@ const styles = {
     alignItems: 'center',
     gap: '0.5rem',
   },
+  solutionsList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.5rem',
+    maxHeight: '360px',
+    overflowY: 'auto',
+    paddingRight: '0.25rem',
+  },
+  solutionItem: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '0.65rem 0.85rem',
+    background: 'rgba(255, 255, 255, 0.02)',
+    border: '1px solid rgba(255, 255, 255, 0.06)',
+    borderRadius: '8px',
+    gap: '0.75rem',
+  },
+  solutionTitle: {
+    fontSize: '0.85rem',
+    fontWeight: '600',
+    color: '#f3f4f6',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  solutionMeta: {
+    fontSize: '0.75rem',
+    color: '#9ca3af',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '0.35rem',
+    marginTop: '0.15rem',
+  },
+  langBadge: {
+    background: 'rgba(167, 139, 250, 0.15)',
+    color: '#c4b5fd',
+    padding: '0.1rem 0.35rem',
+    borderRadius: '4px',
+    fontFamily: 'var(--font-code)',
+    fontSize: '0.7rem',
+    textTransform: 'uppercase',
+  },
 };
+
 
 export default MyProfilesPage;

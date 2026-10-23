@@ -316,6 +316,10 @@ class CodeChefCollector(BaseCollector):
                     break
 
                 if feed_resp.status_code != 200:
+                    if page == 0 and not submissions_result:
+                        if feed_resp.status_code == 403:
+                            raise CodeChefAPIError("CodeChef returned 403 Forbidden / Cloudflare access block.")
+                        raise CodeChefAPIError(f"CodeChef feed request failed with HTTP {feed_resp.status_code}.")
                     break
 
                 pages_fetched += 1
@@ -323,6 +327,11 @@ class CodeChefCollector(BaseCollector):
                 try:
                     feed_data = feed_resp.json()
                 except Exception:
+                    if page == 0 and not submissions_result:
+                        resp_text = getattr(feed_resp, "text", "")
+                        if "Just a moment..." in resp_text or "Cloudflare" in resp_text:
+                            raise CodeChefAPIError("CodeChef access blocked by Cloudflare verification.")
+                        raise CodeChefAPIError("Failed to parse CodeChef feed response as JSON.")
                     break
 
                 content = feed_data.get("content", "")
@@ -333,11 +342,13 @@ class CodeChefCollector(BaseCollector):
                 rows = re.findall(r"<tr\s*>(.*?)</tr>", content, re.DOTALL)
                 page_added = 0
                 page_already_known = 0
+                valid_data_rows = 0
 
                 for row in rows:
                     prob_match = re.search(r"href=[\'\"](?:/[^\'\"]+)?/problems/([^\'\"]+)[\'\"][^>]*>(.*?)</a>", row)
                     if not prob_match:
                         continue
+                    valid_data_rows += 1
                     prob_code = prob_match.group(1).strip()
                     prob_title = prob_match.group(2).strip() or prob_code
 
@@ -375,7 +386,7 @@ class CodeChefCollector(BaseCollector):
                 # Early Pagination Stopping Condition:
                 # If existing_sub_ids was passed and all items on this page are already known in the database,
                 # stop fetching older pages because feed is reverse chronological (newest first).
-                if existing_sub_ids and len(rows) > 0 and page_already_known == len(rows):
+                if existing_sub_ids and valid_data_rows > 0 and page_already_known == valid_data_rows:
                     break
 
                 if self.page_delay > 0:

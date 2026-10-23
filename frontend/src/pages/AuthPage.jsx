@@ -15,19 +15,40 @@ const AuthPage = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+
+    if (!isLogin) {
+      if (!email.trim() || !username.trim() || !password) {
+        setError('Please fill in all registration fields.');
+        return;
+      }
+      if (username.trim().length < 3) {
+        setError('Username must be at least 3 characters long.');
+        return;
+      }
+      if (password.length < 6) {
+        setError('Password must be at least 6 characters long.');
+        return;
+      }
+    }
+
     setLoading(true);
 
     try {
       if (isLogin) {
-        await login(username || email, password);
+        await login(username.trim() || email.trim(), password);
       } else {
-        if (!email || !username || !password) {
-          throw new Error('Please fill in all fields.');
-        }
-        await register(email, username, password);
+        await register(email.trim(), username.trim(), password);
       }
     } catch (err) {
-      const msg = err.response?.data?.detail || err.message || 'Authentication failed.';
+      let msg = err.response?.data?.detail;
+      if (Array.isArray(msg)) {
+        msg = msg.map((m) => m.msg || m.message || (typeof m === 'string' ? m : JSON.stringify(m))).join(', ');
+      } else if (typeof msg === 'object' && msg !== null) {
+        msg = msg.message || msg.msg || JSON.stringify(msg);
+      }
+      if (!msg) {
+        msg = err.message || 'Authentication failed.';
+      }
       setError(msg);
     } finally {
       setLoading(false);

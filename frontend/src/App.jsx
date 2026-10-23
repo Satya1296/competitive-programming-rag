@@ -21,17 +21,22 @@ const MainApp = () => {
     let isMounted = true;
     const checkUserOnboarding = async () => {
       if (!user) {
+        setShowOnboarding(false);
         setCheckingProfiles(false);
         return;
       }
+      if (isMounted) setCheckingProfiles(true);
       try {
         const statuses = await platformApi.getAllStatuses();
         // If user has 0 connected profiles, show onboarding once
         if (isMounted && (!statuses || statuses.length === 0)) {
           setShowOnboarding(true);
+        } else if (isMounted) {
+          setShowOnboarding(false);
         }
       } catch (err) {
         console.error('Failed to check user profiles for onboarding:', err);
+        if (isMounted) setShowOnboarding(false);
       } finally {
         if (isMounted) setCheckingProfiles(false);
       }

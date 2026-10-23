@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -18,7 +18,10 @@ class SourceCodeResponse(BaseModel):
     language: str
     source_code: str
     filename: Optional[str] = None
+    github_url: Optional[str] = None
+    available_solutions: Optional[List[Dict[str, Any]]] = None
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+

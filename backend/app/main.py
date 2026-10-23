@@ -1,5 +1,7 @@
+import re
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 from fastapi import FastAPI, Depends, HTTPException, Query, UploadFile, File, Form, status
@@ -32,6 +34,14 @@ from app.collectors.codechef import (
     CodeChefUserNotFoundError,
     CodeChefRateLimitError,
 )
+from app.collectors.github import (
+    GitHubCollector,
+    GitHubAPIError,
+    GitHubRepoNotFoundError,
+    GitHubRateLimitError,
+    GitHubAuthError,
+    parse_github_repo_url,
+)
 from app.preprocessing.normalizer import (
     normalize_codeforces_submissions,
     save_normalized_codeforces,
@@ -46,12 +56,14 @@ from app.schema.auth import (
 )
 from app.schema.profile import (
     ConnectProfileRequest,
+    ConnectGitHubRequest,
     ProfileStatusResponse,
     SyncResponse,
     SubmissionResponse,
     PublicProfileSearchRequest,
     PublicProfileSearchResponse,
 )
+
 from app.schema.source_code import (
     AddSourceCodeRequest,
     SourceCodeResponse,
@@ -100,6 +112,16 @@ def detect_language_from_filename(filename: str) -> str:
 async def lifespan(app: FastAPI):
     # Initialize relational database tables on startup
     init_db()
+    # Pre-warm embedding service and ChromaDB on startup so user requests do not experience cold-start latency
+    try:
+        from app.vectorstore.embedder import get_embedding_service
+        from app.vectorstore.chroma_client import get_chroma_store
+        logger.info("Pre-warming EmbeddingService and ChromaDB on startup...")
+        get_embedding_service()
+        get_chroma_store()
+        logger.info("EmbeddingService and ChromaDB ready.")
+    except Exception as exc:
+        logger.warning(f"Embedding pre-warming encountered an issue (will load on demand): {exc}")
     yield
 
 
@@ -112,7 +134,13 @@ app = FastAPI(
 # Enable CORS for local React development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -849,6 +877,172 @@ def sync_codechef_submissions(
     )
 
 
+# -----------------------------------------------------------------------------
+# GITHUB REPOSITORY INTEGRATION ENDPOINTS (USER-SCOPED)
+# -----------------------------------------------------------------------------
+
+@app.post("/api/platforms/github/connect", response_model=ProfileStatusResponse)
+def connect_github_repository(
+    req: ConnectGitHubRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Connect a GitHub repository to the authenticated user's account.
+    Validates URL format, accessibility via GitHub API, and handles private/public repos.
+    """
+    try:
+        owner, repo = parse_github_repo_url(req.repo_url)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+
+    full_repo = f"{owner}/{repo}"
+    token = req.access_token.strip() if req.access_token else None
+
+    collector = GitHubCollector(access_token=token)
+    try:
+        collector.validate_repository(full_repo, token=token)
+    except GitHubRepoNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        )
+    except GitHubAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        )
+    except GitHubRateLimitError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+        )
+    except GitHubAPIError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to access GitHub repository '{full_repo}': {exc}",
+        )
+
+    profile = (
+        db.query(PlatformProfile)
+        .filter(
+            PlatformProfile.user_id == current_user.id,
+            PlatformProfile.platform == "github",
+        )
+        .first()
+    )
+
+    if profile:
+        profile.handle = full_repo
+        profile.api_key = token
+    else:
+        profile = PlatformProfile(
+            user_id=current_user.id,
+            platform="github",
+            handle=full_repo,
+            api_key=token,
+        )
+        db.add(profile)
+
+    db.commit()
+    db.refresh(profile)
+
+    total_subs = (
+        db.query(SubmissionRecord)
+        .filter(
+            SubmissionRecord.user_id == current_user.id,
+            SubmissionRecord.code_source == "github_lookup",
+        )
+        .count()
+    )
+
+    return ProfileStatusResponse(
+        platform="github",
+        handle=profile.handle,
+        connected_at=profile.created_at,
+        total_submissions_synced=total_subs,
+        has_api_credentials=bool(profile.api_key),
+    )
+
+
+@app.get("/api/platforms/github/status", response_model=ProfileStatusResponse)
+def get_github_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Retrieve GitHub repository connection status for the authenticated user."""
+    profile = (
+        db.query(PlatformProfile)
+        .filter(
+            PlatformProfile.user_id == current_user.id,
+            PlatformProfile.platform == "github",
+        )
+        .first()
+    )
+
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No GitHub repository connected for this user.",
+        )
+
+    total_subs = (
+        db.query(SubmissionRecord)
+        .filter(
+            SubmissionRecord.user_id == current_user.id,
+            SubmissionRecord.code_source == "github_lookup",
+        )
+        .count()
+    )
+
+    return ProfileStatusResponse(
+        platform="github",
+        handle=profile.handle,
+        connected_at=profile.created_at,
+        total_submissions_synced=total_subs,
+        has_api_credentials=bool(profile.api_key),
+    )
+
+
+@app.delete("/api/platforms/github/disconnect")
+def disconnect_github_repository(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Disconnect GitHub repository for the authenticated user.
+    Strictly scoped to current_user.
+    """
+    profile = (
+        db.query(PlatformProfile)
+        .filter(
+            PlatformProfile.user_id == current_user.id,
+            PlatformProfile.platform == "github",
+        )
+        .first()
+    )
+
+    if not profile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No GitHub repository connected for this user.",
+        )
+
+    db.delete(profile)
+    db.commit()
+
+    return {"message": "GitHub repository disconnected successfully."}
+
+
+
 @app.get("/api/platforms/status", response_model=List[ProfileStatusResponse])
 def get_all_platform_statuses(
     current_user: User = Depends(get_current_user),
@@ -862,24 +1056,36 @@ def get_all_platform_statuses(
 
     res = []
     for p in profiles:
-        total_subs = (
-            db.query(SubmissionRecord)
-            .filter(
-                SubmissionRecord.user_id == current_user.id,
-                SubmissionRecord.platform == p.platform,
+        if p.platform == "github":
+            total_subs = (
+                db.query(SubmissionRecord)
+                .filter(
+                    SubmissionRecord.user_id == current_user.id,
+                    SubmissionRecord.code_source == "github_lookup",
+                )
+                .count()
             )
-            .count()
-        )
+        else:
+            total_subs = (
+                db.query(SubmissionRecord)
+                .filter(
+                    SubmissionRecord.user_id == current_user.id,
+                    SubmissionRecord.platform == p.platform,
+                )
+                .count()
+            )
         res.append(
             ProfileStatusResponse(
                 platform=p.platform,
                 handle=p.handle,
                 connected_at=p.created_at,
                 total_submissions_synced=total_subs,
-                has_api_credentials=bool(p.api_key and p.api_secret),
+                has_api_credentials=bool(p.api_key) if p.platform == "github" else bool(p.api_key and p.api_secret),
             )
         )
+
     return res
+
 
 
 # -----------------------------------------------------------------------------
@@ -1088,6 +1294,8 @@ def get_user_stats(
     }
 
 
+
+
 # -----------------------------------------------------------------------------
 # PHASE 3: SOURCE CODE IMPORT & STORAGE ENDPOINTS (USER-SCOPED)
 # -----------------------------------------------------------------------------
@@ -1281,11 +1489,80 @@ async def upload_source_code_file(
 )
 def get_submission_source_code(
     submission_id: str,
+    file_path: Optional[str] = Query(None, description="Specific GitHub solution file path to view"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Retrieve saved source code record for a submission belonging to authenticated user."""
-    _validate_submission_ownership(submission_id, current_user.id, db)
+    """
+    Retrieve saved source code record for a submission belonging to authenticated user.
+    If source code is unavailable, dynamically look up the connected user's GitHub repository.
+    If a reliable match is found, fetch, cache, and return the actual source code with GitHub link.
+    If no reliable match is found, return 404 (Source Code Unavailable).
+    """
+    # 1. Attempt to locate submission in relational database
+    submission = db.query(SubmissionRecord).filter(SubmissionRecord.id == submission_id).first()
+    if submission:
+        if submission.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to access or modify this submission.",
+            )
+    else:
+        # Check if this is an indexed standalone GitHub document belonging to the user
+        chroma_store = get_chroma_store()
+        res = None
+        try:
+            res = chroma_store._collection.get(
+                where={"$and": [{"user_id": str(current_user.id)}, {"submission_id": str(submission_id)}]}
+            )
+        except Exception as e:
+            logger.warning(f"ChromaDB lookup for standalone submission '{submission_id}' failed: {e}")
+
+        if res and res.get("metadatas") and len(res["metadatas"]) > 0:
+            meta = res["metadatas"][0]
+            docs = res.get("documents", [])
+            full_doc = "\n".join(docs) if docs else ""
+
+            code_text = ""
+            code_match = re.search(r"## Source Code\s*```[a-zA-Z0-9_\-]*\n([\s\S]*?)```", full_doc)
+            if code_match:
+                code_text = code_match.group(1).strip()
+            elif docs:
+                code_text = docs[0]
+
+            gh_url = None
+            notes_match = re.search(r"\*\*Notes\*\*:\s*Synced from GitHub repo ([^:\n]+):\s*([^\n]+)", full_doc)
+            filename = None
+            if notes_match:
+                repo_name = notes_match.group(1).strip()
+                file_subpath = notes_match.group(2).strip()
+                gh_url = f"https://github.com/{repo_name}/blob/main/{file_subpath}"
+                filename = Path(file_subpath).name
+
+            if not code_text:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Source Code Unavailable",
+                )
+
+            now = datetime.now(timezone.utc)
+            return SourceCodeResponse(
+                id=f"src_{submission_id}",
+                user_id=current_user.id,
+                submission_id=submission_id,
+                language=meta.get("language") or "cpp",
+                source_code=code_text,
+                filename=filename or f"{meta.get('problem_id', 'solution')}.{meta.get('language', 'cpp')}",
+                created_at=now,
+                updated_at=now,
+                github_url=gh_url,
+                available_solutions=[],
+            )
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Submission '{submission_id}' not found.",
+        )
 
     source_record = (
         db.query(SubmissionSourceCode)
@@ -1296,13 +1573,136 @@ def get_submission_source_code(
         .first()
     )
 
-    if not source_record:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No source code attached for submission '{submission_id}'.",
+    gh_profile = (
+        db.query(PlatformProfile)
+        .filter(
+            PlatformProfile.user_id == current_user.id,
+            PlatformProfile.platform == "github",
+        )
+        .first()
+    )
+
+    # 1. If user requested a specific file path from connected GitHub repository
+    if file_path and gh_profile:
+        collector = GitHubCollector(access_token=gh_profile.api_key)
+        matched_solution = collector.lookup_solution(
+            repo_handle=gh_profile.handle,
+            token=gh_profile.api_key,
+            problem_title=submission.problem_title,
+            problem_slug=submission.problem_id,
+            problem_id=submission.problem_id,
+            preferred_language=submission.language,
+            target_file_path=file_path,
+        )
+        if matched_solution:
+            now = datetime.now(timezone.utc)
+            return SourceCodeResponse(
+                id=source_record.id if source_record else f"src_{submission.id}",
+                user_id=current_user.id,
+                submission_id=submission.id,
+                language=matched_solution["language"],
+                source_code=matched_solution["code"],
+                filename=matched_solution["filename"],
+                created_at=source_record.created_at if source_record else now,
+                updated_at=source_record.updated_at if source_record else now,
+                github_url=matched_solution["url"],
+                available_solutions=matched_solution.get("available_solutions", []),
+            )
+
+    # 2. If genuine source code is already stored in SubmissionSourceCode, return it
+    if source_record and source_record.source_code and not source_record.source_code.startswith("// Source code not provided"):
+        gh_url = None
+        if submission.notes and submission.notes.startswith("GitHub: "):
+            gh_url = submission.notes[len("GitHub: "):].strip()
+        resp = SourceCodeResponse.model_validate(source_record)
+        resp.github_url = gh_url
+        return resp
+
+    # 2b. If genuine source code is already stored in submission.code, return it
+    if submission.has_source_code:
+        gh_url = None
+        if submission.notes and submission.notes.startswith("GitHub: "):
+            gh_url = submission.notes[len("GitHub: "):].strip()
+        now = datetime.now(timezone.utc)
+        return SourceCodeResponse(
+            id=source_record.id if source_record else f"src_{submission.id}",
+            user_id=current_user.id,
+            submission_id=submission.id,
+            language=submission.language,
+            source_code=submission.code,
+            filename=source_record.filename if source_record else None,
+            created_at=source_record.created_at if source_record else now,
+            updated_at=source_record.updated_at if source_record else now,
+            github_url=gh_url,
         )
 
-    return SourceCodeResponse.model_validate(source_record)
+    # 3. If source code is unavailable, dynamically look up user's connected GitHub repository
+    if gh_profile:
+        collector = GitHubCollector(access_token=gh_profile.api_key)
+        try:
+            matched_solution = collector.lookup_solution(
+                repo_handle=gh_profile.handle,
+                token=gh_profile.api_key,
+                problem_title=submission.problem_title,
+                problem_slug=submission.problem_id,
+                problem_id=submission.problem_id,
+                preferred_language=submission.language,
+            )
+        except TypeError:
+            matched_solution = collector.lookup_solution(
+                repo_handle=gh_profile.handle,
+                token=gh_profile.api_key,
+                problem_title=submission.problem_title,
+                problem_slug=submission.problem_id,
+                problem_id=submission.problem_id,
+            )
+
+        if matched_solution:
+            code_text = matched_solution["code"]
+            lang = matched_solution["language"]
+            filename = matched_solution["filename"]
+            gh_url = matched_solution["url"]
+            available_sols = matched_solution.get("available_solutions", [])
+
+            if source_record:
+                source_record.source_code = code_text
+                source_record.language = lang
+                source_record.filename = filename
+            else:
+                source_record = SubmissionSourceCode(
+                    user_id=current_user.id,
+                    submission_id=submission_id,
+                    language=lang,
+                    source_code=code_text,
+                    filename=filename,
+                )
+                db.add(source_record)
+
+            submission.code = code_text
+            submission.code_source = "github_lookup"
+            submission.language = lang
+            submission.notes = f"GitHub: {gh_url}"
+
+            db.commit()
+            db.refresh(source_record)
+            db.refresh(submission)
+
+            # Automatically index new code into ChromaDB vector store
+            try:
+                index_submission_for_user(user_id=current_user.id, submission_id=submission.submission_id, db=db)
+            except Exception as e:
+                logger.warning(f"Auto-indexing submission '{submission.submission_id}' from GitHub lookup failed: {e}")
+
+            resp = SourceCodeResponse.model_validate(source_record)
+            resp.github_url = gh_url
+            resp.available_solutions = available_sols
+            return resp
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Source Code Unavailable",
+    )
+
 
 
 # -----------------------------------------------------------------------------
@@ -1358,13 +1758,14 @@ def get_index_status(current_user: User = Depends(get_current_user)):
 def search_knowledge(
     req: SearchQueryRequest,
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """
     Perform natural language semantic vector search over the current user's indexed code knowledge.
     Only returns results that meet or exceed the relevance similarity threshold.
     """
     top_k = req.top_k or 20
-    kwargs = {"user_id": current_user.id, "query": req.query, "top_k": top_k}
+    kwargs = {"user_id": current_user.id, "query": req.query, "top_k": top_k, "db": db}
     if req.min_similarity is not None:
         kwargs["min_similarity"] = req.min_similarity
     res = search_user_knowledge(**kwargs)
