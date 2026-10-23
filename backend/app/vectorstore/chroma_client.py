@@ -1,4 +1,5 @@
 import logging
+import threading
 from typing import List, Dict, Any, Optional
 from app.config import (
     CHROMA_PERSIST_DIR,
@@ -30,13 +31,24 @@ class ChromaVectorStore:
         self.hnsw_space = hnsw_space
         self._client = None
         self._collection = None
-        self._init_store()
+        self._store_lock = threading.Lock()
+        # ChromaDB client is initialized lazily on first access to preserve memory
+
+    def _ensure_store(self):
+        if self._collection is not None:
+            return
+        with self._store_lock:
+            if self._collection is not None:
+                return
+            self._init_store()
 
     def _init_store(self):
         try:
             import chromadb
+            from chromadb.config import Settings
             logger.info(f"Initializing Persistent ChromaDB client at: {self.persist_dir}")
-            self._client = chromadb.PersistentClient(path=self.persist_dir)
+            settings = Settings(anonymized_telemetry=False, is_persistent=True)
+            self._client = chromadb.PersistentClient(path=self.persist_dir, settings=settings)
             self._collection = self._client.get_or_create_collection(
                 name=self.collection_name,
                 metadata={
@@ -66,6 +78,7 @@ class ChromaVectorStore:
         """
         Upserts document chunks and embeddings into ChromaDB with deterministic IDs and user_id metadata.
         """
+        self._ensure_store()
         if not chunks or not embeddings or len(chunks) != len(embeddings):
             return 0
 
@@ -100,6 +113,7 @@ class ChromaVectorStore:
         """
         Retrieves a set of all submission_ids belonging strictly to user_id that are already stored in ChromaDB.
         """
+        self._ensure_store()
         try:
             results = self._collection.get(
                 where={"user_id": str(user_id)},
@@ -127,6 +141,7 @@ class ChromaVectorStore:
         """
         Upserts large collections of chunks into ChromaDB in safe batches to prevent memory/payload limits.
         """
+        self._ensure_store()
         if not ids or not embeddings or len(ids) != len(embeddings) or len(ids) != len(documents):
             return 0
 
@@ -165,6 +180,7 @@ class ChromaVectorStore:
         if not query_embedding:
             return []
 
+        self._ensure_store()
         # STRICT MANDATORY MULTI-USER FILTER
         where_filter = {"user_id": str(user_id)}
 
@@ -289,6 +305,7 @@ class ChromaVectorStore:
         Deletes all vector chunks for a specific submission owned strictly by user_id.
         Prevents orphaned or duplicate chunk vectors during re-indexing.
         """
+        self._ensure_store()
         try:
             results = self._collection.get(
                 where={"$and": [{"user_id": str(user_id)}, {"submission_id": str(submission_id)}]},
@@ -309,6 +326,7 @@ class ChromaVectorStore:
         Deletes all vector chunks owned strictly by user_id.
         Safely clears user data without affecting other users.
         """
+        self._ensure_store()
         try:
             results = self._collection.get(
                 where={"user_id": str(user_id)},
@@ -329,6 +347,7 @@ class ChromaVectorStore:
         Deletes all vector documents belonging strictly to user_id for a given platform.
         Used when a user updates/switches platform profile (e.g. Codeforces handle switch).
         """
+        self._ensure_store()
         try:
             results = self._collection.get(
                 where={"$and": [{"user_id": str(user_id)}, {"platform": str(platform)}]},

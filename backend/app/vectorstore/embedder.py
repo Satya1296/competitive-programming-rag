@@ -19,13 +19,22 @@ class EmbeddingService:
         self._model = None
         self._init_error: Optional[str] = None
         self._model_lock = threading.Lock()
-        self._init_model()
+        # Model is loaded lazily on first embedding request to preserve memory on boot
 
     def _init_model(self):
         with self._model_lock:
             if self._model is not None:
                 return
             try:
+                # Constrain PyTorch thread pool on CPU to reduce thread-local memory overhead on container environments
+                try:
+                    import torch
+                    torch.set_num_threads(1)
+                    if hasattr(torch, "set_num_interop_threads"):
+                        torch.set_num_interop_threads(1)
+                except Exception:
+                    pass
+
                 from sentence_transformers import SentenceTransformer
                 logger.info(f"Initializing SentenceTransformer model: {self.model_name}")
                 self._model = SentenceTransformer(self.model_name)
@@ -44,8 +53,14 @@ class EmbeddingService:
                 raise RuntimeError(f"Embedding model initialization failed for '{self.model_name}': {self._init_error}")
             self._init_model()
         
-        vector = self._model.encode(str(text), convert_to_numpy=True)
-        return vector.tolist()
+        try:
+            import torch
+            with torch.inference_mode():
+                vector = self._model.encode(str(text), convert_to_numpy=True)
+                return vector.tolist()
+        except Exception:
+            vector = self._model.encode(str(text), convert_to_numpy=True)
+            return vector.tolist()
 
     def embed_batch(self, texts: List[str]) -> List[List[float]]:
         if not texts:
@@ -56,8 +71,14 @@ class EmbeddingService:
             self._init_model()
 
         clean_texts = [str(t) if (t and str(t).strip()) else " " for t in texts]
-        vectors = self._model.encode(clean_texts, batch_size=32, show_progress_bar=False, convert_to_numpy=True)
-        return vectors.tolist()
+        try:
+            import torch
+            with torch.inference_mode():
+                vectors = self._model.encode(clean_texts, batch_size=16, show_progress_bar=False, convert_to_numpy=True)
+                return vectors.tolist()
+        except Exception:
+            vectors = self._model.encode(clean_texts, batch_size=16, show_progress_bar=False, convert_to_numpy=True)
+            return vectors.tolist()
 
 
 def get_embedding_service(model_name: str = EMBEDDING_MODEL_NAME) -> EmbeddingService:

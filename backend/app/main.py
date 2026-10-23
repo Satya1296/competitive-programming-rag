@@ -110,18 +110,10 @@ def detect_language_from_filename(filename: str) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize relational database tables on startup
+    # Initialize relational database tables on startup (lightweight, <10ms, <1MB RAM)
     init_db()
-    # Pre-warm embedding service and ChromaDB on startup so user requests do not experience cold-start latency
-    try:
-        from app.vectorstore.embedder import get_embedding_service
-        from app.vectorstore.chroma_client import get_chroma_store
-        logger.info("Pre-warming EmbeddingService and ChromaDB on startup...")
-        get_embedding_service()
-        get_chroma_store()
-        logger.info("EmbeddingService and ChromaDB ready.")
-    except Exception as exc:
-        logger.warning(f"Embedding pre-warming encountered an issue (will load on demand): {exc}")
+    # Note: EmbeddingService and ChromaDB are lazily loaded on first query to preserve memory
+    # and guarantee that Render health checks pass immediately on boot.
     yield
 
 
